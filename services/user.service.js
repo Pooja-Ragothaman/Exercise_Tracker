@@ -120,129 +120,85 @@ if (Object.keys(errorObj).length > 0) {
 });
 
 
-// Get a user's exercise log
-// router.get('/users/:_id/logs', async (req, res) => {
-//   const { _id } = req.params;
-//   const { from, to, limit } = req.query;
-
-//   try {
-//     // Step 1: Find the user by ID
-//     const user = await User.findById(_id);
-//     if (!user) {
-//       return res.status(statusCodes.NOT_FOUND).json({ error: errorMessages.USER_NOT_FOUND });
-//     }
-
-//     // Step 2: Prepare date filters
-//     const dateFilter = {};
-//     if (from) {
-//       const fromDate = new Date(from);
-//       fromDate.setHours(0, 0, 0, 0);
-//       if (isNaN(fromDate.getTime())) {
-//         return res.status(statusCodes.BAD_REQUEST).json({ error: errorMessages.INVALID_DATE });
-//       }
-//       dateFilter.$gte = fromDate;
-//     }
-
-//     if (to) {
-//       const toDate = new Date(to);
-//       toDate.setHours(23, 59, 59, 999); 
-//       if (isNaN(toDate.getTime())) {
-//         return res.status(statusCodes.BAD_REQUEST).json({ error: errorMessages.INVALID_DATE });
-//       }
-//       dateFilter.$lte = toDate;
-//     }
-
-//     // Step 3: Filter logs based on date range
-//     const filteredLogs = user.log.filter((log) => {
-//       const logDate = new Date(log.date);
-//       const isAfterFrom = dateFilter.$gte ? logDate >= dateFilter.$gte : true;
-//       const isBeforeTo = dateFilter.$lte ? logDate <= dateFilter.$lte : true;
-//       return isAfterFrom && isBeforeTo;
-//     });
-
-//     // Step 4: Calculate the total count of logs after filtering
-//     const totalCount = filteredLogs.length;
-
-//     // Step 5: Sort the logs by date
-//     filteredLogs.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-//     // Step 6: Apply the limit if provided
-//     const limitedLogs = limit ? filteredLogs.slice(0, parseInt(limit, 10)) : filteredLogs;
-
-//     // Step 7: Prepare the response
-//     const responseData = {
-//       username: user.username,
-//       count: totalCount, // Reflect the count of logs in the filtered range
-//       _id: user._id,
-//       log: limitedLogs, // Include only the logs within the limit
-//     };
-
-//     // Step 8: Send the response
-//     res.status(statusCodes.OK).json(responseData);
-//   } catch (err) {
-//     // Handle server errors
-//     res.status(statusCodes.SERVER_ERROR).json({ error: errorMessages.SERVER_ERROR });
-//   }
-// });
-
-
-router.get('/users/:_id/logs', async (req, res) => {
+router.get("/users/:_id/logs", async (req, res) => {
   const { _id } = req.params;
-  const { from, to, limit } = req.query;  
+  const { from, to, limit } = req.query;
 
   try {
-    
-    const dateFilter = {};
-    if (from) {
-      const fromDate = new Date(from);
-      fromDate.setHours(0, 0, 0, 0); 
-      if (isNaN(fromDate.getTime())) {
-        return res.status(statusCodes.BAD_REQUEST).json({ error: errorMessages.INVALID_DATE });
-      }
-      dateFilter.$gte = fromDate; 
+    // Validate _id
+    const userId = mongoose.Types.ObjectId.isValid(_id) ? new mongoose.Types.ObjectId(_id) : _id;
+
+    // Validate Dates
+    const isValidDate = (date) => !isNaN(new Date(date).getTime());
+    if (from && !isValidDate(from)) {
+      return res.status(400).json({ error: errorMessages.INVALID_DATE_FORMAT });
+    }
+    if (to && !isValidDate(to)) {
+      return res.status(400).json({ error: errorMessages.INVALID_DATE_FORMAT });
     }
 
-    if (to) {
-      const toDate = new Date(to);
-      toDate.setHours(23, 59, 59, 999); 
-      if (isNaN(toDate.getTime())) {
-        return res.status(statusCodes.BAD_REQUEST).json({ error: errorMessages.INVALID_DATE });
-      }
-      dateFilter.$lte = toDate; 
+    // Build the aggregation pipeline
+    const pipeline = [
+      { $match: { _id: userId } },
+      {
+        $project: {
+          username: 1,
+          log: {
+            $filter: {
+              input: "$log",
+              as: "log",
+              cond: {
+                $and: [
+                  from
+                    ? {
+                        $gte: [
+                          { $dateFromString: { dateString: "$$log.date" } }, // Convert string to Date for comparison
+                          new Date(from),
+                        ],
+                      }
+                    : {},
+                  to
+                    ? {
+                        $lte: [
+                          { $dateFromString: { dateString: "$$log.date" } }, // Convert string to Date for comparison
+                          new Date(to),
+                        ],
+                      }
+                    : {},
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        $addFields: {
+          count: { $size: "$log" },
+          log: limit ? { $slice: ["$log", parseInt(limit, 10)] } : "$log",
+        },
+      },
+    ];
+
+    // Execute the pipeline
+    const result = await User.aggregate(pipeline);
+
+    // If no user found
+    if (!result.length) {
+      return res.status(404).json({ error: errorMessages.USER_NOT_FOUND });
     }
 
-    const user = await User.findOne(
-      { _id, "log.date": { $gte: dateFilter.$gte || new Date(0), $lte: dateFilter.$lte || new Date() } },  // Match the user and filter by date range
-      { log: 1 } // Only return the "log" field
-    );
-
-    if (!user) {
-      return res.status(statusCodes.NOT_FOUND).json({ error: errorMessages.USER_NOT_FOUND });
-    }
-    const filteredLogs = user.log.filter((log) => {
-      const logDate = new Date(log.date);
-      const isAfterFrom = dateFilter.$gte ? logDate >= dateFilter.$gte : true;
-      const isBeforeTo = dateFilter.$lte ? logDate <= dateFilter.$lte : true;
-      return isAfterFrom && isBeforeTo;
-    });
-
-    filteredLogs.sort((a, b) => new Date(a.date) - new Date(b.date));
-    const totalCount=filteredLogs.length;
-    const limitedLogs = filteredLogs.slice(0, parseInt(limit));
-    const responseData = {
+    // Return the filtered and limited logs
+    const user = result[0];
+    res.status(200).json({
       username: user.username,
       _id: user._id,
-      count: totalCount,
-      log: limitedLogs,
-    };
-    res.status(statusCodes.OK).json(responseData);
+      count: user.count,
+      log: user.log,
+    });
   } catch (err) {
-    res.status(statusCodes.SERVER_ERROR).json({ error: errorMessages.SERVER_ERROR });
+    res.status(500).json({ error: errorMessages.SERVER_ERROR, details: err.message });
   }
 });
-
-
-
 
 
 module.exports = router;
