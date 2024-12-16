@@ -119,56 +119,59 @@ if (Object.keys(errorObj).length > 0) {
   }
 });
 
-
 router.get("/users/:_id/logs", async (req, res) => {
   const { _id } = req.params;
-  const { from, to, limit } = req.query;
-
-  try {
+  const { from, to, limit } = req.query;  try {
     // Validate _id
-    const userId = mongoose.Types.ObjectId.isValid(_id) ? new mongoose.Types.ObjectId(_id) : _id;
-
-    // Validate Dates
+    const userId = mongoose.Types.ObjectId.isValid(_id) ? new mongoose.Types.ObjectId(_id) : _id;    // Validate Dates
     const isValidDate = (date) => !isNaN(new Date(date).getTime());
     if (from && !isValidDate(from)) {
       return res.status(400).json({ error: errorMessages.INVALID_DATE_FORMAT });
     }
     if (to && !isValidDate(to)) {
       return res.status(400).json({ error: errorMessages.INVALID_DATE_FORMAT });
-    }
-
-    // Build the aggregation pipeline
+    }    // Build the aggregation pipeline
     const pipeline = [
       { $match: { _id: userId } },
       {
         $project: {
           username: 1,
+          log: 1,  // Pass the logs to be processed further
+        },
+      },
+      {
+        $addFields: {
           log: {
-            $filter: {
+            $map: {
               input: "$log",
               as: "log",
-              cond: {
-                $and: [
-                  from
-                    ? {
-                        $gte: [
-                          { $dateFromString: { dateString: "$$log.date" } }, // Convert string to Date for comparison
-                          new Date(from),
-                        ],
-                      }
-                    : {},
-                  to
-                    ? {
-                        $lte: [
-                          { $dateFromString: { dateString: "$$log.date" } }, // Convert string to Date for comparison
-                          new Date(to),
-                        ],
-                      }
-                    : {},
-                ],
+              in: {
+                date: { $dateFromString: { dateString: "$$log.date" } },
+                log: "$$log",  // retain the entire log
               },
             },
           },
+        },
+      },
+      {
+        $unwind: "$log", 
+      },
+      {
+        $sort: { "log.date": 1 }, // Sort logs by date in ascending order (use -1 for descending order)
+      },
+      {
+        $match: {
+          $and: [
+            from ? { "log.date": { $gte: new Date(from) } } : {},
+            to ? { "log.date": { $lte: new Date(to) } } : {},
+          ],
+        },
+      },
+      {
+        $group: {
+          _id: "$_id",
+          username: { $first: "$username" },
+          log: { $push: "$log.log" },  // Push the log entries back into an array
         },
       },
       {
@@ -177,17 +180,11 @@ router.get("/users/:_id/logs", async (req, res) => {
           log: limit ? { $slice: ["$log", parseInt(limit, 10)] } : "$log",
         },
       },
-    ];
-
-    // Execute the pipeline
-    const result = await User.aggregate(pipeline);
-
-    // If no user found
+    ];    // Execute the pipeline
+    const result = await User.aggregate(pipeline);    // If no user found
     if (!result.length) {
       return res.status(404).json({ error: errorMessages.USER_NOT_FOUND });
-    }
-
-    // Return the filtered and limited logs
+    }    // Return the filtered and limited logs
     const user = result[0];
     res.status(200).json({
       username: user.username,
@@ -199,6 +196,5 @@ router.get("/users/:_id/logs", async (req, res) => {
     res.status(500).json({ error: errorMessages.SERVER_ERROR, details: err.message });
   }
 });
-
 
 module.exports = router;
